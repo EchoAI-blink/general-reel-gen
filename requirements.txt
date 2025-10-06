@@ -1,0 +1,27 @@
+# Core Dependencies
+python-dotenv==1.0.0
+
+# AI/LLM APIs
+openai
+g4f[all]
+
+# Text-to-Speech
+gradio_client
+
+# Video/Audio Processing
+moviepy==1.0.3
+Pillow==10.2.0
+numpy==1.26.4
+
+# MoviePy Dependencies (compatible versions)
+imageio==2.34.0
+imageio-ffmpeg==0.4.9
+decorator==4.4.2
+proglog==0.1.10
+tqdm==4.66.1
+
+# Audio Processing
+pydub==0.25.1
+
+# Optional but recommended
+requests==2.31.0

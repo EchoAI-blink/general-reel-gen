@@ -4,19 +4,30 @@ from gradio_client import Client, handle_file
 import shutil
 from dotenv import load_dotenv
 from pathlib import Path
+import time  # Added for retry delays
+
+
 
 # Load environment variables
 load_dotenv()
+
+
 
 # TTS Engine Selection (set in .env file)
 # Options: "kokoro" or "chatterbox"
 TTS_ENGINE = os.getenv("TTS_ENGINE", "kokoro").lower()
 
+
+
 print(f"🔊 TTS Engine: {TTS_ENGINE.upper()}")
+
+
 
 # Initialize TTS clients based on selection
 kokoro_client = None
 unified_tts_client = None
+
+
 
 if TTS_ENGINE == "kokoro":
     try:
@@ -26,6 +37,8 @@ if TTS_ENGINE == "kokoro":
         print(f"⚠️  Kokoro TTS failed to initialize: {e}")
         print("Falling back to Chatterbox TTS...")
         TTS_ENGINE = "chatterbox"
+
+
 
 if TTS_ENGINE == "chatterbox":
     try:
@@ -66,74 +79,83 @@ if TTS_ENGINE == "chatterbox":
                 
                 raise ConnectionError("Failed to connect to any TTS API")
             
+            def _retry_predict(self, client, predict_args, max_retries=3):
+                """Helper for retrying predict calls with exponential backoff"""
+                for attempt in range(max_retries):
+                    try:
+                        return client.predict(**predict_args)
+                    except Exception as e:
+                        if attempt == max_retries - 1:
+                            raise e
+                        wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                        print(f"    Retry {attempt + 1}/{max_retries} after {wait_time}s delay: {str(e)[:50]}...")
+                        time.sleep(wait_time)
+                
+                raise RuntimeError("All retry attempts failed")
+            
             def generate(self, text, reference_audio=None, language="en"):
                 """Generate speech with automatic fallback"""
+                audio_input = handle_file(reference_audio) if reference_audio else handle_file(
+                    'https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav'
+                )
+                
                 if self.current_api == "backup" and self.backup_client:
                     try:
-                        audio_input = handle_file(reference_audio) if reference_audio else handle_file(
-                            'https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav'
-                        )
-                        
-                        result = self.backup_client.predict(
-                            text=text,
-                            ref_wav=audio_input,
-                            exaggeration=0.5,
-                            temperature=0.8,
-                            seed=0,
-                            cfg_weight=0.5,
-                            api_name=self.BACKUP_ENDPOINT
-                        )
+                        predict_args = {
+                            "text": text,
+                            "ref_wav": audio_input,
+                            "exaggeration": 0.5,
+                            "temperature": 0.8,
+                            "seed": 0,
+                            "cfg_weight": 0.5,
+                            "api_name": self.BACKUP_ENDPOINT
+                        }
+                        result = self._retry_predict(self.backup_client, predict_args)
                         return result[0]  # audio_path
                     except Exception as e:
                         # Try primary if backup fails
                         if self.primary_client:
-                            audio_input = handle_file(reference_audio) if reference_audio else handle_file(
-                                'https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav'
-                            )
-                            result = self.primary_client.predict(
-                                text_input=text,
-                                language_id=language,
-                                audio_prompt_path_input=audio_input,
-                                exaggeration_input=0.5,
-                                temperature_input=0.8,
-                                seed_num_input=0,
-                                cfgw_input=0.5,
-                                api_name=self.PRIMARY_ENDPOINT
-                            )
+                            predict_args = {
+                                "text_input": text,
+                                "language_id": language,
+                                "audio_prompt_path_input": audio_input,
+                                "exaggeration_input": 0.5,
+                                "temperature_input": 0.8,
+                                "seed_num_input": 0,
+                                "cfgw_input": 0.5,
+                                "api_name": self.PRIMARY_ENDPOINT
+                            }
+                            result = self._retry_predict(self.primary_client, predict_args)
                             return result
                         raise e
                 
                 elif self.current_api == "primary" and self.primary_client:
                     try:
-                        audio_input = handle_file(reference_audio) if reference_audio else handle_file(
-                            'https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav'
-                        )
-                        result = self.primary_client.predict(
-                            text_input=text,
-                            language_id=language,
-                            audio_prompt_path_input=audio_input,
-                            exaggeration_input=0.5,
-                            temperature_input=0.8,
-                            seed_num_input=0,
-                            cfgw_input=0.5,
-                            api_name=self.PRIMARY_ENDPOINT
-                        )
+                        predict_args = {
+                            "text_input": text,
+                            "language_id": language,
+                            "audio_prompt_path_input": audio_input,
+                            "exaggeration_input": 0.5,
+                            "temperature_input": 0.8,
+                            "seed_num_input": 0,
+                            "cfgw_input": 0.5,
+                            "api_name": self.PRIMARY_ENDPOINT
+                        }
+                        result = self._retry_predict(self.primary_client, predict_args)
                         return result
                     except Exception as e:
                         # Try backup if primary fails
                         if self.backup_client:
-                            audio_input = handle_file(reference_audio) if reference_audio else handle_file(
-                                'https://github.com/gradio-app/gradio/raw/main/test/test_files/audio_sample.wav'
-                            )
-                            result = self.backup_client.predict(
-                                text=text,
-                                ref_wav=audio_input,
-                                exaggeration=0.5,
-                                temperature=0.8,
-                                seed=0,
-                                cfg_weight=0.5,
-                                api_name=self.BACKUP_ENDPOINT
-                            )
+                            predict_args = {
+                                "text": text,
+                                "ref_wav": audio_input,
+                                "exaggeration": 0.5,
+                                "temperature": 0.8,
+                                "seed": 0,
+                                "cfg_weight": 0.5,
+                                "api_name": self.BACKUP_ENDPOINT
+                            }
+                            result = self._retry_predict(self.backup_client, predict_args)
                             return result[0]
                         raise e
                 
@@ -147,11 +169,14 @@ if TTS_ENGINE == "chatterbox":
             raise Exception("No TTS engine available!")
 
 
+
 # Voice mapping for Kokoro TTS
 KOKORO_VOICE_MAP = {
     "Person 1": "bm_lewis",
     "Person 2": "bm_george"
 }
+
+
 
 # Voice cloning reference audio for Chatterbox TTS
 CHATTERBOX_VOICE_MAP = {
@@ -160,10 +185,14 @@ CHATTERBOX_VOICE_MAP = {
 }
 
 
+
+
 def load_storyboard(file_path):
     """Load storyboard from JSON file"""
     with open(file_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+
 
 
 def generate_audio_kokoro(text, voice, speed=1.0):
@@ -171,22 +200,30 @@ def generate_audio_kokoro(text, voice, speed=1.0):
     if not kokoro_client:
         raise Exception("Kokoro TTS not initialized")
     
-    try:
-        result = kokoro_client.predict(
-            text=text,
-            voice=voice,
-            speed=speed,
-            api_name="/generate_first"
-        )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            result = kokoro_client.predict(
+                text=text,
+                voice=voice,
+                speed=speed,
+                api_name="/generate_first"
+            )
+            
+            # Result is a tuple: (audio_path, phonemes)
+            audio_path = result[0]
+            phonemes = result[1]
+            
+            return audio_path, phonemes
         
-        # Result is a tuple: (audio_path, phonemes)
-        audio_path = result[0]
-        phonemes = result[1]
-        
-        return audio_path, phonemes
-    
-    except Exception as e:
-        raise Exception(f"Kokoro TTS generation failed: {str(e)}")
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise Exception(f"Kokoro TTS generation failed after {max_retries} attempts: {str(e)}")
+            wait_time = 2 ** attempt  # Exponential backoff
+            print(f"    Kokoro retry {attempt + 1}/{max_retries} after {wait_time}s: {str(e)[:50]}...")
+            time.sleep(wait_time)
+
+
 
 
 def generate_audio_chatterbox(text, reference_audio):
@@ -201,16 +238,20 @@ def generate_audio_chatterbox(text, reference_audio):
             print(f"   Using default voice...")
             reference_audio = None
         
+        # ========== FIXED: generate() returns a single value, not a tuple ==========
         audio_path = unified_tts_client.generate(
             text=text,
             reference_audio=reference_audio,
             language="en"
         )
+        # ===========================================================================
         
         return audio_path, None  # No phonemes from Chatterbox
     
     except Exception as e:
         raise Exception(f"Chatterbox TTS generation failed: {str(e)}")
+
+
 
 
 def generate_audio(text, speaker, speed=1.0):
@@ -241,6 +282,8 @@ def generate_audio(text, speaker, speed=1.0):
         raise ValueError(f"Unknown TTS engine: {TTS_ENGINE}")
 
 
+
+
 def process_storyboard_audio(storyboard_path, output_folder="audio_output"):
     """Process storyboard and generate audio for all dialogue lines"""
     
@@ -258,7 +301,7 @@ def process_storyboard_audio(storyboard_path, output_folder="audio_output"):
     # Ensure assets folder exists if using Chatterbox
     if TTS_ENGINE == "chatterbox":
         os.makedirs("assets", exist_ok=True)
-        
+            
         # Check if reference audio files exist
         for speaker, ref_audio in CHATTERBOX_VOICE_MAP.items():
             if not os.path.exists(ref_audio):
@@ -320,7 +363,7 @@ def process_storyboard_audio(storyboard_path, output_folder="audio_output"):
                 print(f"      ✓ Saved: {filename}")
                 
             except Exception as e:
-                print(f"      ✗ Error: {str(e)}")
+                print(f"      ✗ Error after retries: {str(e)}")
                 continue
         
         print()  # Empty line between scenes
@@ -339,6 +382,8 @@ def process_storyboard_audio(storyboard_path, output_folder="audio_output"):
     print(f"{'='*60}")
     
     return specific_output_folder, audio_metadata
+
+
 
 
 def find_latest_storyboard(storyboard_folder="story_board"):
@@ -360,6 +405,8 @@ def find_latest_storyboard(storyboard_folder="story_board"):
     return os.path.join(storyboard_folder, latest_file)
 
 
+
+
 def process_specific_storyboard(storyboard_name):
     """Process a specific storyboard by name"""
     storyboard_path = os.path.join("story_board", f"{storyboard_name}.json")
@@ -374,6 +421,8 @@ def process_specific_storyboard(storyboard_name):
     except Exception as e:
         print(f"Error processing storyboard: {str(e)}")
         return False
+
+
 
 
 def test_tts_engine():
@@ -400,10 +449,12 @@ def test_tts_engine():
             print(f"  Metadata: {metadata}\n")
             
         except Exception as e:
-            print(f"  ✗ Failed: {e}\n")
+            print(f"  ✗ Failed after retries: {e}\n")
     
     print(f"Test audio saved in 'test_audio' folder")
     print(f"{'='*60}\n")
+
+
 
 
 if __name__ == "__main__":

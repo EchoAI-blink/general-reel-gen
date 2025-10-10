@@ -1,5 +1,6 @@
 import os
 import json
+import random
 from dotenv import load_dotenv
 from moviepy.editor import (
     VideoFileClip, AudioFileClip, ImageClip, CompositeVideoClip,
@@ -9,8 +10,10 @@ from moviepy.video.fx.all import speedx
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
+
 # Load environment variables
 load_dotenv()
+
 
 # Configuration
 BACKGROUND_VIDEO_PATH = "assets/background.mp4"
@@ -18,12 +21,13 @@ BACKGROUND_MUSIC_PATH = "assets/background.mp3"
 PERSON_1_IMAGE_PATH = "assets/person_1.png"
 PERSON_2_IMAGE_PATH = "assets/person_2.png"
 
+
 # From .env
 USE_CHARACTER_IMAGES = os.getenv("USE_CHARACTER_IMAGES", "yes").lower() == "yes"
-VIDEO_START_TIME = 60  # Start at 1 minute
 VIDEO_SPEED = 2.0
-BACKGROUND_MUSIC_VOLUME = 0.5  # 20% volume for background music
+BACKGROUND_MUSIC_VOLUME = 0.5  # 50% volume for background music
 WORDS_PER_LINE = 4  # Number of words to show at once
+
 
 def load_audio_metadata(audio_folder):
     """Load audio metadata from the audio output folder"""
@@ -34,6 +38,7 @@ def load_audio_metadata(audio_folder):
     
     with open(metadata_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
 
 def resize_image_pil(image_path, target_height):
     """Resize image using PIL to avoid moviepy compatibility issues"""
@@ -51,6 +56,7 @@ def resize_image_pil(image_path, target_height):
     img_resized = img.resize((new_width, target_height), Image.LANCZOS)
     
     return np.array(img_resized)
+
 
 def create_line_image(text, video_size, font_size=20):
     """Create an image with one line of text"""
@@ -115,6 +121,7 @@ def create_line_image(text, video_size, font_size=20):
     
     return img
 
+
 def create_animated_subtitle_clips(text, duration, video_size):
     """Create animated subtitle clips showing chunks of words that change"""
     words = text.split()
@@ -151,6 +158,7 @@ def create_animated_subtitle_clips(text, duration, video_size):
     
     return clips
 
+
 def create_video_with_audio(audio_folder, output_filename="final_video.mp4"):
     """Create the final video with all elements"""
     
@@ -163,8 +171,12 @@ def create_video_with_audio(audio_folder, output_filename="final_video.mp4"):
     metadata = load_audio_metadata(audio_folder)
     
     # Load background video
-    print(f"Loading background video from {VIDEO_START_TIME}s at {VIDEO_SPEED}x speed...")
+    print("Loading background video...")
     background_video = VideoFileClip(BACKGROUND_VIDEO_PATH)
+    
+    # Get the total duration of the background video
+    background_duration = background_video.duration
+    print(f"Background video duration: {background_duration:.2f}s")
     
     # Calculate total audio duration
     total_audio_duration = 0
@@ -178,9 +190,24 @@ def create_video_with_audio(audio_folder, output_filename="final_video.mp4"):
     
     print(f"Total audio duration: {total_audio_duration:.2f}s")
     
-    # Extract and speed up background video
+    # Calculate how much video we need
     video_needed_duration = total_audio_duration / VIDEO_SPEED
-    background_video = background_video.subclip(VIDEO_START_TIME, VIDEO_START_TIME + video_needed_duration)
+    
+    # Calculate the maximum possible random start time
+    max_start_time = background_duration - video_needed_duration
+    
+    # Generate a random start time (ensure it's not negative)
+    if max_start_time > 0:
+        random_start_time = random.randint(0, int(max_start_time))
+    else:
+        random_start_time = 0
+        print("Warning: Audio duration exceeds available background video!")
+    
+    print(f"Randomly selected start time: {random_start_time}s at {VIDEO_SPEED}x speed")
+    print(f"Using video segment from {random_start_time}s to {random_start_time + video_needed_duration:.2f}s")
+    
+    # Extract and speed up background video from random position
+    background_video = background_video.subclip(random_start_time, random_start_time + video_needed_duration)
     background_video = speedx(background_video, VIDEO_SPEED)
     background_video = background_video.set_duration(total_audio_duration)
     
@@ -319,6 +346,7 @@ def create_video_with_audio(audio_folder, output_filename="final_video.mp4"):
     
     return output_path
 
+
 def find_latest_audio_folder(base_folder="audio_output"):
     """Find the most recently created audio folder"""
     if not os.path.exists(base_folder):
@@ -336,6 +364,7 @@ def find_latest_audio_folder(base_folder="audio_output"):
     
     return os.path.join(base_folder, latest_folder)
 
+
 def concatenate_audioclips(clips):
     """Concatenate audio clips sequentially"""
     if not clips:
@@ -350,6 +379,7 @@ def concatenate_audioclips(clips):
         current_time += clip.duration
     
     return CompositeAudioClip(audio_clips_with_timing)
+
 
 if __name__ == "__main__":
     # Find latest audio folder

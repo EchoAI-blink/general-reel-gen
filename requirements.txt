@@ -25,3 +25,4 @@ pydub==0.25.1
 
 # Optional but recommended
 requests==2.31.0
+gdown

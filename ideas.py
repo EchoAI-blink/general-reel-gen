@@ -4,8 +4,10 @@ from dotenv import load_dotenv
 from openai import OpenAI
 import sys
 
+
 # Load environment variables from .env file
 load_dotenv()
+
 
 class APIProviderManager:
     """Manages multiple API providers with automatic fallback"""
@@ -15,11 +17,12 @@ class APIProviderManager:
         self.client = None
         self.current_provider = None
         self.model = None
+        self.client_type = None  # Track client type: 'g4f' or 'openai'
         
     def get_nvidia_client(self):
         """Initialize NVIDIA NIM API client"""
         api_key = os.getenv('NVIDIA_API_KEY')
-        model = os.getenv('NVIDIA_MODEL', 'meta/llama-3.1-8b-instruct')
+        model = os.getenv('NVIDIA_MODEL', 'meta/llama-3.1-70b-instruct')
         
         if not api_key:
             raise ValueError("NVIDIA_API_KEY not found in environment variables")
@@ -28,17 +31,24 @@ class APIProviderManager:
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=api_key
         )
-        return client, model, 'NVIDIA'
+        return client, model, 'NVIDIA', 'openai'
     
     def get_g4f_client(self):
-        """Initialize G4F API client"""
+        """Initialize G4F client using native g4f library"""
+        try:
+            import g4f
+            from g4f.client import Client
+        except ImportError:
+            raise ImportError(
+                "g4f library is not installed.\n"
+                "Please install it with: pip install -U g4f"
+            )
+        
         model = os.getenv('G4F_MODEL', 'gpt-4o-mini')
         
-        client = OpenAI(
-            base_url="http://localhost:1337/v1",
-            api_key="secret"
-        )
-        return client, model, 'G4F'
+        # Use native g4f client
+        client = Client()
+        return client, model, 'G4F', 'g4f'
     
     def get_openai_client(self):
         """Initialize custom OpenAI API client"""
@@ -53,7 +63,7 @@ class APIProviderManager:
             base_url=base_url,
             api_key=api_key
         )
-        return client, model, 'OPENAI'
+        return client, model, 'OPENAI', 'openai'
     
     def initialize_client(self, provider_name):
         """Initialize client for specified provider"""
@@ -67,75 +77,117 @@ class APIProviderManager:
             else:
                 raise ValueError(f"Unknown provider: {provider_name}")
         except Exception as e:
-            print(f"Failed to initialize {provider_name}: {str(e)}")
-            return None, None, None
+            print(f"✗ Failed to initialize {provider_name}: {str(e)}")
+            return None, None, None, None
     
     def setup_with_fallback(self):
         """Setup client with fallback logic"""
-        self.client, self.model, self.current_provider = self.initialize_client(self.primary_provider)
+        print(f"\nAttempting to connect to primary provider: {self.primary_provider}")
+        self.client, self.model, self.current_provider, self.client_type = self.initialize_client(self.primary_provider)
         
         if self.client:
             print(f"✓ Successfully connected to {self.current_provider}")
+            print(f"✓ Using model: {self.model}")
+            print(f"✓ Client type: {self.client_type}")
             return True
         
+        # Define fallback chain
         fallback_providers = []
         if self.primary_provider == 'NVIDIA':
-            fallback_providers = ['G4F']
+            fallback_providers = ['G4F', 'OPENAI']
         elif self.primary_provider == 'G4F':
-            fallback_providers = ['NVIDIA']
+            fallback_providers = ['NVIDIA', 'OPENAI']
         elif self.primary_provider == 'OPENAI':
-            print("✗ OpenAI provider failed and no fallback is configured")
-            return False
+            fallback_providers = ['NVIDIA', 'G4F']
         
         for fallback in fallback_providers:
-            print(f"⚠ Attempting fallback to {fallback}...")
-            self.client, self.model, self.current_provider = self.initialize_client(fallback)
+            print(f"\n⚠ Attempting fallback to {fallback}...")
+            self.client, self.model, self.current_provider, self.client_type = self.initialize_client(fallback)
             
             if self.client:
                 print(f"✓ Successfully connected to fallback provider: {self.current_provider}")
+                print(f"✓ Using model: {self.model}")
+                print(f"✓ Client type: {self.client_type}")
                 return True
         
-        print("✗ All providers failed")
+        print("\n✗ All providers failed. Please check your configuration:")
+        print("  • NVIDIA: Verify NVIDIA_API_KEY and NVIDIA_MODEL in .env")
+        print("  • G4F: Ensure g4f library is installed (pip install -U g4f)")
+        print("  • OPENAI: Verify OPENAI_API_KEY in .env")
         return False
     
     def chat_completion(self, messages, temperature=0.7, max_tokens=2000, stream=False):
-        """Send a chat completion request (raw API, no response_format)"""
+        """Send a chat completion request using appropriate client"""
         if not self.client:
             raise Exception("No active client. Please setup client first.")
         
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=stream
-            )
-            return response
-        except Exception as e:
-            print(f"Error during API call with {self.current_provider}: {str(e)}")
+            # Use appropriate client based on type
+            if self.client_type == 'g4f':
+                # G4F native client
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    # G4F doesn't use temperature/max_tokens the same way
+                    stream=stream
+                )
+            elif self.client_type == 'openai':
+                # OpenAI-compatible client (NVIDIA or OPENAI)
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=stream
+                )
+            else:
+                raise ValueError(f"Unknown client type: {self.client_type}")
             
-            if self.current_provider in ['NVIDIA', 'G4F']:
-                fallback = 'G4F' if self.current_provider == 'NVIDIA' else 'NVIDIA'
+            return response
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"\n✗ Error during API call with {self.current_provider}: {error_msg}")
+            
+            # Try single fallback attempt
+            fallback_map = {
+                'NVIDIA': 'G4F',
+                'G4F': 'NVIDIA',
+                'OPENAI': 'NVIDIA'
+            }
+            
+            fallback = fallback_map.get(self.current_provider)
+            if fallback:
                 print(f"⚠ Attempting fallback to {fallback} due to error...")
                 
-                self.client, self.model, self.current_provider = self.initialize_client(fallback)
+                self.client, self.model, self.current_provider, self.client_type = self.initialize_client(fallback)
                 
                 if self.client:
                     print(f"✓ Switched to fallback provider: {self.current_provider}")
+                    print(f"✓ Using model: {self.model}")
+                    print(f"✓ Client type: {self.client_type}")
                     try:
-                        response = self.client.chat.completions.create(
-                            model=self.model,
-                            messages=messages,
-                            temperature=temperature,
-                            max_tokens=max_tokens,
-                            stream=stream
-                        )
+                        # Retry with appropriate client
+                        if self.client_type == 'g4f':
+                            response = self.client.chat.completions.create(
+                                model=self.model,
+                                messages=messages,
+                                stream=stream
+                            )
+                        elif self.client_type == 'openai':
+                            response = self.client.chat.completions.create(
+                                model=self.model,
+                                messages=messages,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                stream=stream
+                            )
                         return response
                     except Exception as fallback_error:
-                        print(f"Fallback provider also failed: {str(fallback_error)}")
+                        print(f"✗ Fallback provider also failed: {str(fallback_error)}")
                         raise
             raise
+
 
 
 def load_existing_ideas(filename='ideas.json'):
@@ -183,10 +235,12 @@ def load_existing_ideas(filename='ideas.json'):
         return [], 0
 
 
+
 def generate_initial_ideas(manager):
     """Generate initial video content ideas"""
     
     prompt = """Create a JSON array with 5–10 short-form video content ideas optimized for TikTok, Instagram Reels, and YouTube Shorts, suitable for a general knowledge or storytelling channel.
+
 
 Requirements:
 - Ensure diversity across science, history, unsolved mysteries, technology, surprising human-interest stories, and oddities. Cover at least 5 different categories overall.
@@ -204,8 +258,10 @@ Requirements:
 - IMPORTANT: Output ONLY valid JSON with proper double quotes around all keys and string values.
 - Do not add any commentary before or after the JSON.
 
+
 Output format: A JSON array of objects with these exact fields:
 id, idea, caption, channel_style_prompt, character_style_prompt, production_status, final_output, publishing_status, error_log
+
 
 Constraints:
 - id is a unique integer starting at 1.
@@ -222,6 +278,7 @@ Constraints:
     print("="*60)
     print(f"Using Provider: {manager.current_provider}")
     print(f"Using Model: {manager.model}")
+    print(f"Client Type: {manager.client_type}")
     print("="*60 + "\n")
     
     try:
@@ -280,6 +337,7 @@ Constraints:
         return None
 
 
+
 def rank_and_filter_ideas(manager, initial_ideas):
     """Rank ideas and return only the best ones"""
     
@@ -288,19 +346,27 @@ def rank_and_filter_ideas(manager, initial_ideas):
     
     ranking_prompt = f"""Analyze and rank all provided short-form video ideas based on the following criteria. Output ONLY the top-ranked ideas in JSON format matching the original input structure.
 
+
 Evaluation Criteria (Score each 1-10):
+
 
 1. hook_strength: Does the title and caption immediately grab attention within 3 seconds? Is the hook curiosity-driven and specific?
 
+
 2. viral_potential: Likelihood of shares, saves, and rewatches based on uniqueness, emotional trigger, or surprise factor.
+
 
 3. production_feasibility: Can this be produced with accessible resources? Does the character_style_prompt provide clear visual direction?
 
+
 4. educational_value: Does it deliver a satisfying payoff? Is the fact or story genuinely interesting and memorable?
+
 
 5. platform_optimization: Is it optimized for vertical video pacing (20-45 seconds)? Does the channel_style_prompt match short-form best practices?
 
+
 6. engagement_trigger: Does it spark comments, debates, or emotional reactions (wonder, curiosity, shock)?
+
 
 Ranking Process:
 - Calculate total_score for each idea (sum of all 6 criteria, max 60 points)
@@ -308,6 +374,7 @@ Ranking Process:
 - For ties, prioritize hook_strength, then viral_potential
 - Select only ideas with total_score >= 45 (top-tier ideas)
 - If fewer than 3 ideas score >= 45, output the top 3 ideas regardless of score
+
 
 Output Format (JSON array):
 [
@@ -324,6 +391,7 @@ Output Format (JSON array):
   }}
 ]
 
+
 Requirements:
 - Output ONLY valid JSON array with no additional text, markdown, or commentary
 - Preserve all original field values exactly as provided in the input
@@ -331,7 +399,9 @@ Requirements:
 - Include only top-performing ideas based on scoring threshold
 - Ensure JSON is parseable by Python json.loads()
 
+
 Here are the ideas to rank:
+
 
 {ideas_json_string}"""
     
@@ -344,6 +414,7 @@ Here are the ideas to rank:
     print("="*60)
     print(f"Using Provider: {manager.current_provider}")
     print(f"Using Model: {manager.model}")
+    print(f"Client Type: {manager.client_type}")
     print(f"Analyzing {len(initial_ideas)} ideas...")
     print("="*60 + "\n")
     
@@ -403,6 +474,7 @@ Here are the ideas to rank:
         return None
 
 
+
 def renumber_and_append_ids(new_ideas, start_id):
     """Renumber IDs for new ideas starting from start_id"""
     
@@ -423,6 +495,7 @@ def renumber_and_append_ids(new_ideas, start_id):
     print(f"\n✓ Successfully renumbered {len(renumbered_ideas)} new ideas")
     
     return renumbered_ideas
+
 
 
 def save_ideas_to_file(existing_ideas, new_ideas, output_file='ideas.json'):
@@ -460,6 +533,7 @@ def save_ideas_to_file(existing_ideas, new_ideas, output_file='ideas.json'):
         return False
 
 
+
 def main():
     """Main execution function"""
     
@@ -468,7 +542,11 @@ def main():
     
     # Setup client with fallback
     if not manager.setup_with_fallback():
-        print("Failed to initialize any API provider")
+        print("\n✗ Failed to initialize any API provider")
+        print("\nTroubleshooting tips:")
+        print("  • For NVIDIA: Check NVIDIA_API_KEY in .env file")
+        print("  • For G4F: Install g4f library (pip install -U g4f)")
+        print("  • For OpenAI: Check OPENAI_API_KEY in .env file")
         sys.exit(1)
     
     # Load existing ideas and get max ID
@@ -509,6 +587,7 @@ def main():
     else:
         print("\n✗ Script completed with errors")
         sys.exit(1)
+
 
 
 if __name__ == "__main__":
